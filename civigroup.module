@@ -1,0 +1,220 @@
+<?php
+
+function _civigroup_chart_for_group($gid) {
+  require_once 'api/v2/Contact.php';
+  $chart = array( '#chart_id' => 'Testing',
+		'#title' => t('Membership History'),
+		'#type' => CHART_TYPE_LINE,
+		'#adjust_resolution' => TRUE,
+	);
+
+	require_once 'CRM/Contact/BAO/GroupNesting.php';
+
+  $gids = CRM_Contact_BAO_GroupNesting::getDescendentGroupIds($gid);
+
+  $params = array('version' => 3, 'contact_type' => 'Individual', 'group' => array($gid=>1));
+  $num_members = civicrm_contact_search_count($params);
+ 
+  $chart['#data'][] = array();
+  $chart['#data'][mktime(0, 0, 0, date("m"), date("d"),   date("Y"))] = $num_members; 
+  $i = 0;
+  while ($i < 12) {
+	$phpdate = mktime(0, 0, 0, date("m")-$i, date("d"),   date("Y"));
+	$mysqldate = date( 'Y-m-d H:i:s', $phpdate );
+	$query = db_query('select * from {civicrm_subscription_history} where group_id IN (:gid) and date > :date', array('date' => $mysqldate, 'gid' => implode(',',$gids)))->fetchAll(); 
+	$num_removed = 0;
+	foreach ($query as $sub) {
+		if($sub->status == 'Removed') $num_removed++;
+	}
+	$num_added = count($query) - $num_removed; 
+	$chart['#data'][$phpdate] = $num_members + $num_removed - $num_added;
+	$i++;
+  }
+  $chart['#data'] = array_reverse($chart['#data'], true); 
+  return theme('chart', array('chart' => $chart)); 
+}
+
+
+function civigroup_load_contactsJSON(){
+  if(isset($_GET['group'])) {
+	civicrm_initialize();
+  require_once 'api/api.php';
+
+
+    $group = (int) (str_replace("group_id_", "", $_GET['group']));
+    
+    $params = array('version' => 3, 'contact_type' => 'Individual', 'rowCount' => 5000, 'group' => array($group=>1), 'return.sort_name' => 1, 'sort' => 'sort_name ASC');
+    $contacts = civicrm_api('Contact', 'Get', $params);
+    $history = _civigroup_chart_for_group($group);
+    $output = array('contacts' => array_values($contacts['values']), 'history' => $history);
+    drupal_json_output($output);
+  }
+}
+
+function civigroup_menu(){
+	$items['civicrm/groups/contactsJSON'] = array(
+							'title' => 'Load Civi Group Contacts',
+							'page callback' => 'civigroup_load_contactsJSON',
+							'type' => MENU_CALLBACK,
+							'access arguments' => array('access civi group gui'),
+							);
+	$items['civicrm/groups/heirarchy'] = array(
+		'title' => 'Groups',
+		'page callback' => 'civigroup_groups_view',
+		'access arguments' => array('access civi group gui'),
+	);
+	return $items;
+}
+
+function civigroup_permission() {
+	return array(
+	'access civi group gui' => array(
+		'title' => t('Access Civi Group GUI'),
+		'description' => t('Give users access to civi groups'),
+	),
+	);
+}
+
+function civigroup_groups_view() {
+	civicrm_initialize();
+  drupal_add_library('system', 'ui.draggable');
+  drupal_add_library('system', 'ui.droppable');
+
+  $settings = civigroup_javascript_settings();
+  drupal_add_css(drupal_get_path('module', 'civigroup').'/css/civigroup.css', array('group' => CSS_DEFAULT));
+  drupal_add_js($settings, 'setting');
+  drupal_add_js(drupal_get_path('module', 'civigroup').'/js/civigroup.js', array());
+
+  require_once 'api/api.php';
+  $groups = civicrm_api('Group', 'Get', array('is_hidden' => 0, 'version' => 3));
+  $list['parents'] = $groups['values'];
+  $groups = _civigroup_hierarchy_list($list);
+
+  $header = array(
+	array(
+		'data' => t('Groups'),
+		'width' => '220'
+	),
+	array(
+		'data' => t('Members'),
+		'width' => '*'
+	));
+  $options = array(array(
+	'media' => array(
+			 'data' => $groups['tree']
+	), array(
+		'data' => '<ul id="group-contact-list" style="height: 400px;"><li>Contacts Here</li></ul>'
+		))
+	);
+  $table = array(
+	'header' => $header,
+	'rows' => $options,
+	'attributes' => array('id' => 'media_folder_table'),
+	'empty' => t('No Groups added yet.')
+  );
+
+ return theme('table', $table). '<div id="history_chart"></div>'; 
+}
+
+function civigroup_javascript_settings() {
+  // gather enviroment data
+  $path = drupal_get_path('module', 'civigroup');
+  $host = "https://" . $_SERVER['HTTP_HOST'];
+  $url = url('', array('absolute' => TRUE));
+  
+  $settings = array(
+		    'civigroups' => array(
+					  'url' => $url,
+					  'images_url' => $url . $path . "/images",
+					  'page' => isset($_GET['page']) ? $_GET['page'] : 0,
+					  'group_dnd_enabled' => TRUE, //TODO: make this role based
+					  )
+		    );
+  return $settings;
+}
+
+/**
+ * creates the folder media tree
+ */
+function _civigroup_hierarchy_list($list){
+  if(!isset($list['parents']))
+    return;
+  //
+
+  if(count($list['parents']) == 0){
+    return t('No groups created yet');
+  }
+  else{
+    $roots = array();
+    foreach($list['parents'] as $group) {
+	if($group['parents'] == NULL) {
+		$roots[$group['id']] = $group;
+	}
+    }
+    $elements['tree'] = "<div id='grouplist' style='height: 400px;'>"._civigroup_hierarchy_list_helper($roots,$list['parents']). "</div>";
+    return $elements;
+  }
+  //
+}
+
+/**
+ * @param $parents
+ * @param $children
+ * @param $hide
+ */
+function _civigroup_hierarchy_list_helper($parents, &$all, $hide = false){
+  require_once 'api/v2/Contact.php';
+
+  //
+  $path = '';
+  //
+  $buffer  = "<ul ";
+  $buffer .=" class=\"";
+  $buffer .= $hide ? "hidden" : "";
+  $buffer .= "\">\n";
+  //
+  foreach($parents as $item){
+    $has_children = $item['children'] != NULL;
+    $params = array('version' => 3, 'contact_type' => 'Individual', 'group' => array($item['id']=>1), 'rowcount' => 10000);
+    $num_members = civicrm_contact_search_count($params);
+    //$result=civicrm_api("Contact","getcount", $params);
+    //$num_members = $result['result'];
+    $has_members = ($num_members != 0);
+    //
+    $buffer .= "<li class=\"group_list";
+    if($has_children){
+      $buffer .= " parent\">";
+      $buffer .= "<div class=\"group2";
+      $buffer .= $has_members ? "" : " emptyParent";
+      $buffer .= " group-children-toggle\">" . 
+	"[-]" .
+	//         "<img src=\"".$path."/images/pixel.gif\" border=\"0\" alt=\"\">" .
+         "</div> ";
+      $buffer .= "<div id=\"group_id_".$item['id']."\" class=\"group_load";
+      $buffer .= $has_members ? "" : " emptyGroup";
+      $buffer .= "\">" . $item['title'] . "(".$num_members.")</div>\n";
+      $children = array();
+      $child = strtok($item['children'], ',');
+      while($child !== FALSE) {
+	$children[$child] = $child;
+	$child = strtok(',');
+      }
+      strtok('','');
+      $buffer .= _civigroup_hierarchy_list_helper(array_intersect_key($all,$children), $all, false);
+      $buffer .= "</li>\n";
+    }
+    else {
+      $buffer .= "\">";
+      $buffer .= "<div class=\"group";
+      $buffer .= $has_members ? "" : " empty";
+      $buffer .= " \">" .
+	//        "<img src=\"".$path."/images/pixel.gif\" border=\"0\" alt=\"\">" .
+        "</div> ";
+      $buffer .= "<div id=\"group_id_".$item['id']."\" class=\"group_load";
+      $buffer .= $has_members ? "" : " emptyGroup";
+      $buffer .= "\">" . $item['title'] . " (".$num_members.")</div></li>\n";
+    }
+  }
+  $buffer .= "</ul>\n";
+  return $buffer;
+}

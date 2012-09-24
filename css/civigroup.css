@@ -1,0 +1,11 @@
+.group_list ul.hidden {
+	display: none;
+}
+
+#grouplist, #group-contact-list {
+	overflow: auto;
+}
+
+li .selectedGroup {
+ font-weight: bold;
+}

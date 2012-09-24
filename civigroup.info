@@ -1,0 +1,10 @@
+; $Id $
+name= Civi Group Heirarchy 
+description  = Shows the groups in CiviCRM in a heirarchical fashion 
+package = "CiviCRM"
+php = 5.2
+core = "7.x"
+dependencies[] = civicrm
+dependencies[] = chart
+css[] = css/civigroup.cs
+js[] = js/civigroup.js
